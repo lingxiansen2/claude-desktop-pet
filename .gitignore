@@ -11,6 +11,7 @@ env/
 build/
 dist/
 *.manifest
+*.zip
 
 # 注：claude-pet.spec 保留（打包配置），故不在此忽略
 
