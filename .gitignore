@@ -1,0 +1,25 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- PyInstaller 构建产物（exe 通过 GitHub Release 附件分发，不入库）----
+build/
+dist/
+*.manifest
+
+# 注：claude-pet.spec 保留（打包配置），故不在此忽略
+
+# ---- 运行期生成 ----
+# 桌宠状态文件写在 ~/.claude/pet/status.json，不在仓库内，无需忽略
+
+# ---- IDE / OS ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
