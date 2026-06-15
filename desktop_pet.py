@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Clawd 桌面宠物：沿屏幕四边绕圈爬行，实时显示 Claude Code 状态。
+"""Desktop Pet：沿屏幕四边绕圈爬行，实时显示 Claude Code / Codex 状态。
 
-状态来源：Claude Code hooks 写入 ~/.claude/pet/status.json（见 pet_hook.py），
+状态来源：hooks 写入 ~/.desktop-pet/status.json（见 desktop_hook.py），
 本程序每 0.5s 轮询该文件并切换形象/气泡。
 零第三方依赖，仅用 tkinter + ctypes（Windows）。
 
 运动设计：
 - idle 缓慢巡游 / thinking 散步 / working 快走，沿屏幕四边绕圈爬行（底→侧壁向上→
   顶边倒挂→另一侧壁向下→回到底，闭环）；asking/done/sleeping 静止贴在当前位置
-- 贴壁渲染：螃蟹中心沿四边矩形轨道运动，窗口跟随但始终完整留在工作区内（分层透明
+- 贴壁渲染：角色中心沿四边矩形轨道运动，窗口跟随但始终完整留在工作区内（分层透明
   窗口移出屏幕外会整体不渲染→消失），贴边时窗口钳住、改在画布内部偏移绘制；按所处
   的边把像素精灵旋转 0/90/180/270°，让脚始终朝向墙壁，气泡朝屏幕内侧弹出
 - 性能：平移时画面内容不变，用画面签名跳过无意义重绘，避免每帧重建像素块
@@ -20,14 +20,12 @@ import ctypes.wintypes
 import json
 import os
 import random
+import sys
 import time
 import tkinter as tk
 
-SCALE = 5                       # 每个像素格的边长
 TRANSPARENT = "#ff00ff"         # 窗口透明色
-ORANGE = "#D97757"              # Claude 品牌橙
-EYE = "#5C2E1A"
-CANVAS_W, CANVAS_H = 260, 200   # 画布；螃蟹居中，四周留出气泡/跳跃空间
+CANVAS_W, CANVAS_H = 300, 260   # 画布；角色居中，四周留出气泡/跳跃空间
 TICK_MS = 30                    # 动画帧间隔（~33fps）
 POLL_TICKS = 16                 # 每 16 帧（约 0.5s）读一次状态文件
 SLEEP_AFTER = 1800              # 状态文件超过 30 分钟未更新 → 睡觉
@@ -36,20 +34,41 @@ HOP_V0 = 4.5                    # 起跳初速度（px/帧）
 HOP_G = 0.45                    # 跳跃重力（px/帧²）
 FALL_G = 0.9                    # 拖拽释放下落重力（窗口坐标）
 
-STATUS_FILE = os.path.join(os.path.expanduser("~"), ".claude", "pet", "status.json")
-
-# 像素画：X=身体 e=眼睛 .=透明（参照 Claude Code 里的 Clawd 形象，脚朝下）
-BODY = [
-    "..XX....XX..",
-    "..XX....XX..",
-    ".XXXXXXXXXX.",
-    ".XXXXXXXXXX.",
-    ".XXeXXXXeXX.",
-    ".XXXXXXXXXX.",
-    ".XXXXXXXXXX.",
-]
-LEGS_A = ".XX.XX.XX.XX"
-LEGS_B = "XX.XX.XX.XX."
+STATUS_FILE = os.path.join(os.path.expanduser("~"), ".desktop-pet", "status.json")
+RESOURCE_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+ASSET_DIR = os.path.join(RESOURCE_ROOT, "assets", "miku-upgraded")
+IDLE_ROW = os.path.join(ASSET_DIR, "idle-row.png")
+IDLE_ROW_LEFT = os.path.join(ASSET_DIR, "idle-row-left.png")
+IDLE_ROW_TOP = os.path.join(ASSET_DIR, "idle-row-top.png")
+IDLE_ROW_RIGHT = os.path.join(ASSET_DIR, "idle-row-right.png")
+WALK_BOTTOM_RIGHT = os.path.join(ASSET_DIR, "walk-bottom-right.png")
+WALK_BOTTOM_LEFT = os.path.join(ASSET_DIR, "walk-bottom-left.png")
+WALK_TOP_RIGHT = os.path.join(ASSET_DIR, "walk-top-right.png")
+WALK_TOP_LEFT = os.path.join(ASSET_DIR, "walk-top-left.png")
+WALK_LEFT_UP = os.path.join(ASSET_DIR, "walk-left-up.png")
+WALK_LEFT_DOWN = os.path.join(ASSET_DIR, "walk-left-down.png")
+WALK_RIGHT_UP = os.path.join(ASSET_DIR, "walk-right-up.png")
+WALK_RIGHT_DOWN = os.path.join(ASSET_DIR, "walk-right-down.png")
+FRAME_W, FRAME_H = 192, 208
+IDLE_FRAME_COUNT = 6            # idle-row 后两格为空帧，播放它们会短暂消失
+WALK_FRAME_COUNT = 8
+SPRITE_SUBSAMPLE = 2            # 192x208 -> 96x104，桌面上更精致也不挡视线
+IDLE_ROWS = {
+    "bottom": (IDLE_ROW, FRAME_W, FRAME_H),
+    "left": (IDLE_ROW_LEFT, FRAME_H, FRAME_W),
+    "top": (IDLE_ROW_TOP, FRAME_W, FRAME_H),
+    "right": (IDLE_ROW_RIGHT, FRAME_H, FRAME_W),
+}
+WALK_ROWS = {
+    ("bottom", "right"): (WALK_BOTTOM_RIGHT, FRAME_W, FRAME_H),
+    ("bottom", "left"): (WALK_BOTTOM_LEFT, FRAME_W, FRAME_H),
+    ("top", "right"): (WALK_TOP_RIGHT, FRAME_W, FRAME_H),
+    ("top", "left"): (WALK_TOP_LEFT, FRAME_W, FRAME_H),
+    ("left", "up"): (WALK_LEFT_UP, FRAME_H, FRAME_W),
+    ("left", "down"): (WALK_LEFT_DOWN, FRAME_H, FRAME_W),
+    ("right", "up"): (WALK_RIGHT_UP, FRAME_H, FRAME_W),
+    ("right", "down"): (WALK_RIGHT_DOWN, FRAME_H, FRAME_W),
+}
 
 BUBBLE_STYLE = {
     "thinking": ("#3b3b4f", "#f5e9d8"),
@@ -61,21 +80,12 @@ BUBBLE_STYLE = {
 }
 
 # ---- 四边绕行参数（屏幕坐标，顺时针 bottom→left→top→right）----
-# 旋转圈数 k（顺时针 90°/次）：让脚朝向所在墙壁
-ROT_K = {"bottom": 0, "left": 1, "top": 2, "right": 3}
 # 屏幕内侧法向（画布像素方向），用于气泡弹出与跳跃偏移
 NORMAL = {"bottom": (0, -1), "top": (0, 1), "left": (1, 0), "right": (-1, 0)}
 # 顺时针前进时，该边自由坐标的变化符号
 CW_SIGN = {"bottom": -1, "left": -1, "top": 1, "right": 1}
 NEXT_CW = {"bottom": "left", "left": "top", "top": "right", "right": "bottom"}
 NEXT_CCW = {v: k for k, v in NEXT_CW.items()}
-
-
-def _rot(grid, k):
-    """把像素网格（list[str]）顺时针旋转 k*90°。"""
-    for _ in range(k % 4):
-        grid = ["".join(col) for col in zip(*grid[::-1])]
-    return grid
 
 
 def get_work_area():
@@ -85,7 +95,7 @@ def get_work_area():
     return rect.left, rect.top, rect.right, rect.bottom
 
 
-class ClawdPet:
+class DesktopPet:
     def __init__(self):
         self.root = tk.Tk()
         self.root.overrideredirect(True)
@@ -94,23 +104,27 @@ class ClawdPet:
         self.canvas = tk.Canvas(self.root, width=CANVAS_W, height=CANVAS_H,
                                 bg=TRANSPARENT, highlightthickness=0)
         self.canvas.pack()
+        self.idle_frames_by_edge, self.walk_frames_by_motion = self._load_frames()
+        self.sprite_size = {
+            edge: (frames[0].width(), frames[0].height())
+            for edge, frames in self.idle_frames_by_edge.items()
+        }
 
         self.wa_l, self.wa_t, self.wa_r, self.wa_b = get_work_area()
 
-        # 精灵像素尺寸：水平(底/顶) 12x8，竖直(侧壁) 8x12
-        rows_n, cols_n = len(BODY) + 1, len(BODY[0])
-        w_h, h_h = cols_n * SCALE, rows_n * SCALE       # 水平朝向 宽,高
-        w_v, h_v = rows_n * SCALE, cols_n * SCALE       # 竖直朝向 宽,高
-        # 螃蟹中心点可走的矩形轨道（贴壁：脚正好压在工作区边界上）；
-        # 自由坐标范围按各边对应朝向的"另一半尺寸"内缩，确保拐角处不被裁切
-        self.x_lo = self.wa_l + w_h // 2                # 底/顶 横向自由范围
-        self.x_hi = self.wa_r - w_h // 2
-        self.y_lo = self.wa_t + h_v // 2                # 侧壁 纵向自由范围
-        self.y_hi = self.wa_b - h_v // 2
-        self.cx_left = self.wa_l + w_v // 2             # 各边的固定坐标
-        self.cx_right = self.wa_r - w_v // 2
-        self.cy_top = self.wa_t + h_h // 2
-        self.cy_bottom = self.wa_b - h_h // 2
+        # 按边缘方向使用旋转后的真实贴图尺寸，让脚始终朝向边框。
+        bottom_w, bottom_h = self.sprite_size["bottom"]
+        left_w, left_h = self.sprite_size["left"]
+        top_w, top_h = self.sprite_size["top"]
+        right_w, right_h = self.sprite_size["right"]
+        self.x_lo = self.wa_l + max(bottom_w, top_w) // 2
+        self.x_hi = self.wa_r - max(bottom_w, top_w) // 2
+        self.y_lo = self.wa_t + max(left_h, right_h) // 2
+        self.y_hi = self.wa_b - max(left_h, right_h) // 2
+        self.cx_left = self.wa_l + left_w // 2
+        self.cx_right = self.wa_r - right_w // 2
+        self.cy_top = self.wa_t + top_h // 2
+        self.cy_bottom = self.wa_b - bottom_h // 2
 
         # 行为状态
         self.state = "hello"
@@ -119,7 +133,7 @@ class ClawdPet:
         self.status_mtime = 0.0
         self.edge = "bottom"                # 当前所在的边
         self.cw = random.choice([True, False])  # 绕行方向（顺/逆时针）
-        self.cx = random.randint(self.x_lo, self.x_hi)  # 螃蟹中心（屏幕坐标）
+        self.cx = random.randint(self.x_lo, self.x_hi)  # 角色中心（屏幕坐标）
         self.cy = self.cy_bottom
         self.pause_until = time.time() + 2
         self.tick_n = 0
@@ -135,13 +149,13 @@ class ClawdPet:
         self.win_x = self.win_y = 0        # 当前窗口左上角（始终留在屏幕内）
         self._last_sig = None              # 上一帧画面签名，用于跳过无变化重绘
 
-        self.claude_hwnd = 0               # 最近活动的 Claude 终端窗口句柄
+        self.agent_hwnd = 0                # 最近活动的 agent 终端/窗口句柄
         self.canvas.bind("<Button-1>", self._drag_start)
         self.canvas.bind("<B1-Motion>", self._drag_move)
         self.canvas.bind("<ButtonRelease-1>", self._drag_end)
-        self.canvas.bind("<Double-Button-1>", self._focus_claude)
+        self.canvas.bind("<Double-Button-1>", self._focus_agent)
         self.canvas.bind("<Button-3>", self._menu)
-        # 透明窗口只有不透明像素(小克本体)才收到鼠标事件，故 Enter/Leave 即
+        # 透明窗口只有不透明像素(角色本体)才收到鼠标事件，故 Enter/Leave 即
         # "鼠标停在小克身上/离开"：悬停时停下让你摸一摸，移开继续爬
         self.canvas.bind("<Enter>", self._hover_on)
         self.canvas.bind("<Leave>", self._hover_off)
@@ -151,6 +165,61 @@ class ClawdPet:
 
         self._place()
         self.root.after(TICK_MS, self._tick)
+
+    def _load_frames(self):
+        """加载 Miku Upgraded 四方向 spritesheet，裁成 Tk 原生 PhotoImage 帧。"""
+        idle_frames = {
+            edge: self._load_frame_row(path, frame_w, frame_h, IDLE_FRAME_COUNT)
+            for edge, (path, frame_w, frame_h) in IDLE_ROWS.items()
+        }
+        walk_frames = {}
+        for key, (path, frame_w, frame_h) in WALK_ROWS.items():
+            walk_frames[key] = self._load_frame_row(path, frame_w, frame_h,
+                                                    WALK_FRAME_COUNT)
+        return idle_frames, walk_frames
+
+    def _load_frame_row(self, path, frame_w, frame_h, max_count):
+        sheet = tk.PhotoImage(file=path)
+        count = max(1, min(max_count, sheet.width() // frame_w))
+        frames = []
+        for i in range(count):
+            frame = tk.PhotoImage(width=frame_w, height=frame_h)
+            frame.tk.call(frame, "copy", sheet, "-from",
+                          i * frame_w, 0, (i + 1) * frame_w, frame_h,
+                          "-to", 0, 0)
+            if SPRITE_SUBSAMPLE > 1:
+                frame = frame.subsample(SPRITE_SUBSAMPLE, SPRITE_SUBSAMPLE)
+            frames.append(frame)
+        return frames
+
+    def _frame_index(self, frames):
+        if self.walking:
+            pace = 3 if self.state == "working" else 4
+            return (self.tick_n // pace) % len(frames)
+        if self.state == "sleeping":
+            return 2 if len(frames) > 2 else 0
+        if self.state == "asking":
+            base = 4 if len(frames) > 4 else 0
+            return base + ((self.tick_n // 18) % min(2, len(frames) - base))
+        if self.state == "done":
+            return 5 if len(frames) > 5 else len(frames) - 1
+        if self.state in ("idle", "thinking", "working"):
+            pace = 5 if self.state == "working" else 8
+            return (self.tick_n // pace) % len(frames)
+        return 0
+
+    def _motion_direction(self):
+        sign = CW_SIGN[self.edge] * (1 if self.cw else -1)
+        if self.edge in ("bottom", "top"):
+            return "right" if sign > 0 else "left"
+        return "down" if sign > 0 else "up"
+
+    def _current_frames(self):
+        if self.walking:
+            key = (self.edge, self._motion_direction())
+            return self.walk_frames_by_motion.get(key,
+                                                  self.idle_frames_by_edge[self.edge])
+        return self.idle_frames_by_edge[self.edge]
 
     # ---------- 状态读取 ----------
     def _poll_status(self):
@@ -169,7 +238,7 @@ class ClawdPet:
             with open(STATUS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if data.get("hwnd"):
-                self.claude_hwnd = data["hwnd"]
+                self.agent_hwnd = data["hwnd"]
             self._set_state(data.get("state", "idle"), data.get("detail", ""))
         except (OSError, ValueError):
             if self.state == "hello" and time.time() - self.state_ts > 3:
@@ -204,9 +273,9 @@ class ClawdPet:
         self.falling = True                # 松手沿重力落回底边
         self.fall_v = 0.0
 
-    def _focus_claude(self, _e=None):
-        """双击：把最近活动的 Claude 终端窗口还原并置前。"""
-        hwnd = self.claude_hwnd
+    def _focus_agent(self, _e=None):
+        """双击：把最近活动的 agent 终端/窗口还原并置前。"""
+        hwnd = self.agent_hwnd
         u32 = ctypes.windll.user32
         if not (hwnd and u32.IsWindow(hwnd)):
             return
@@ -368,42 +437,27 @@ class ClawdPet:
                 self.hop_v = 0.0
 
     # ---------- 绘制 ----------
-    def _sprite_rows(self):
-        legs = LEGS_A if (not self.walking or (self.tick_n // 5) % 2 == 0) else LEGS_B
-        rows = list(BODY) + [legs]
-        blink = self.state == "sleeping" or (self.tick_n % 130) in (0, 1, 2, 3)
-        if blink:
-            rows = [r.replace("e", "X") for r in rows]
-        return rows
-
     def _draw(self):
-        # 螃蟹在画布内的中心 = 屏幕中心 - 窗口左上角（贴边时窗口被钳住，
-        # 这个值随之偏移，让螃蟹紧贴墙壁而不出画布）
+        # 角色在画布内的中心 = 屏幕中心 - 窗口左上角（贴边时窗口被钳住，
+        # 这个值随之偏移，让角色紧贴墙壁而不出画布）
         scx = int(self.cx - self.win_x)
         scy = int(self.cy - self.win_y)
-        legs_key = (self.tick_n // 5) % 2 if self.walking else -1
-        blink = self.state == "sleeping" or (self.tick_n % 130) in (0, 1, 2, 3)
+        frames = self._current_frames()
+        frame_idx = self._frame_index(frames)
         text = self._bubble_text()
-        sig = (self.edge, legs_key, blink, int(self.hop_dy), scx, scy, text, self.state)
+        sig = (self.edge, frame_idx, int(self.hop_dy), scx, scy, text, self.state)
         if sig == self._last_sig:        # 画面无变化 → 跳过重绘（仅窗口在平移）
             return
         self._last_sig = sig
 
         c = self.canvas
         c.delete("all")
-        rows = _rot(self._sprite_rows(), ROT_K[self.edge])
-        sw, sh = len(rows[0]) * SCALE, len(rows) * SCALE
+        frame = frames[frame_idx]
+        sw, sh = frame.width(), frame.height()
         nx, ny = NORMAL[self.edge]
         ox = scx - sw // 2 + int(nx * self.hop_dy)
         oy = scy - sh // 2 + int(ny * self.hop_dy)
-        for ry, row in enumerate(rows):
-            for rx, ch in enumerate(row):
-                if ch == ".":
-                    continue
-                x0 = ox + rx * SCALE
-                y0 = oy + ry * SCALE
-                c.create_rectangle(x0, y0, x0 + SCALE, y0 + SCALE,
-                                   fill=EYE if ch == "e" else ORANGE, width=0)
+        c.create_image(ox, oy, image=frame, anchor="nw")
         self._draw_bubble(c, (ox, oy, ox + sw, oy + sh))
 
     def _bubble_text(self):
@@ -420,7 +474,7 @@ class ClawdPet:
         if self.state == "sleeping":
             return "zZz" + dots
         if self.state == "hello":
-            return "Hi~ 我是 Clawd"
+            return "Hi~ 我是 Desktop Pet"
         return None   # idle 无气泡
 
     def _draw_bubble(self, c, sb):
@@ -456,4 +510,4 @@ class ClawdPet:
 
 
 if __name__ == "__main__":
-    ClawdPet().run()
+    DesktopPet().run()

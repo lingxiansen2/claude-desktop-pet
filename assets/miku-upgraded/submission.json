@@ -1,0 +1,22 @@
+{
+  "slug": "miku-upgraded--local",
+  "pet_slug": "miku-upgraded",
+  "author_slug": "local",
+  "name": "Miku Upgraded",
+  "author": "Local Photoshop upgrade",
+  "primary_category": "Anime Characters",
+  "tags": [
+    "anime",
+    "pixel-art",
+    "photoshop-enhanced",
+    "codex-pet"
+  ],
+  "source_type": "derived",
+  "source_url": "https://github.com/legeling/awesome-codex-pet/tree/main/pets/miku--lingxiaotian",
+  "license": "CC BY-NC 4.0",
+  "description": "Derived from the downloaded Miku Codex pet; enhanced locally with Photoshop sharpening and per-frame rim glow.",
+  "codex_install": {
+    "pet_json": "pet.json",
+    "spritesheet": "spritesheet.webp"
+  }
+}

@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Claude Code hook → 桌宠状态文件。
+"""Claude Code / Codex hook → 桌宠状态文件。
 
-用法（settings.json hooks 中配置）: py -3 pet_hook.py <EventName>
-或打包后: claude-pet.exe hook <EventName>
+用法:
+  py -3 main.py hook claude <EventName>
+  py -3 main.py hook codex <EventName>
+或打包后:
+  desktop-pet.exe hook claude <EventName>
+  desktop-pet.exe hook codex <EventName>
 事件 JSON 从 stdin 传入，提取关键信息后原子写入
-~/.claude/pet/status.json，供桌宠轮询。
+~/.desktop-pet/status.json，供桌宠轮询。
 """
 import ctypes
 import ctypes.wintypes
@@ -13,7 +17,20 @@ import os
 import sys
 import time
 
-EVENT_STATE = {
+CODEX_EVENT_STATE = {
+    "SessionStart": "idle",
+    "UserPromptSubmit": "thinking",
+    "PreToolUse": "working",
+    "PermissionRequest": "asking",
+    "PostToolUse": "thinking",
+    "PreCompact": "working",
+    "PostCompact": "thinking",
+    "SubagentStart": "working",
+    "SubagentStop": "thinking",
+    "Stop": "done",
+}
+
+CLAUDE_EVENT_STATE = {
     "UserPromptSubmit": "thinking",
     "PreToolUse": "working",
     "PostToolUse": "thinking",
@@ -26,9 +43,10 @@ EVENT_STATE = {
 }
 
 # 这些工具本质是在等用户做选择，应显示为 asking 而不是 working
-ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+CODEX_ASKING_TOOLS = {"request_user_input", "functions.request_user_input"}
+CLAUDE_ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 
-STATUS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "pet", "status.json")
+STATUS_PATH = os.path.join(os.path.expanduser("~"), ".desktop-pet", "status.json")
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -103,19 +121,20 @@ def _window_title(hwnd):
     return buf.value
 
 
-# 允许作为"Claude 终端窗口"的宿主进程（小写）；其余一律视为非交互会话，
+# 允许作为 agent 终端窗口的宿主进程（小写）；其余一律视为非交互会话，
 # 避免后台 bot/桥接进程把企业微信等无关窗口写进状态文件
 TERMINAL_HOSTS = {
     "windowsterminal.exe", "code.exe", "cursor.exe", "wezterm-gui.exe",
     "alacritty.exe", "conemu64.exe", "conemu.exe", "tabby.exe",
     "hyper.exe", "warp.exe",
 }
+GUI_HOSTS = {"codex.exe", "codex app.exe", "codex-desktop.exe"}
 
 
-def find_terminal_hwnd():
-    """定位承载 Claude Code 的终端窗口 HWND；非交互终端会话返回 0。
+def find_agent_hwnd():
+    """定位承载 agent 的终端/桌面窗口 HWND；非交互会话返回 0。
 
-    控制台程序（claude/cmd/pwsh）自身没有窗口，可见窗口属于宿主：
+    控制台程序（codex/claude/cmd/pwsh）自身没有窗口，可见窗口属于宿主：
     - 传统 conhost：AttachConsole 后 GetConsoleWindow 即为可见窗口
     - Windows Terminal / VS Code：GetConsoleWindow 是隐形伪窗口，
       其属主 conhost/openconsole 的父进程才是真正的终端主进程
@@ -131,6 +150,12 @@ def find_terminal_hwnd():
         if not pid:
             break
         chain.append(pid)
+
+    for pid in chain:
+        if names.get(pid) in GUI_HOSTS:
+            hwnd = _visible_toplevel_of(pid)
+            if hwnd:
+                return hwnd
 
     k32.FreeConsole()   # 自身可能带控制台（开发模式），先脱离
     console_title = ""
@@ -173,47 +198,94 @@ def find_terminal_hwnd():
                 return h
     if len(cands) == 1:
         return cands[0][0]
+    for h, _p in _visible_windows():
+        if "codex" in _window_title(h).lower():
+            return h
     return 0
 
 
-def run_hook(event, stdin=None):
-    """读取事件 JSON 并写状态文件。stdin 为 None 时用 sys.stdin。"""
-    data = {}
+def _read_stdin(stdin):
     try:
         stream = stdin if stdin is not None else getattr(sys.stdin, "buffer", None)
-        if stream is not None:
-            # 二进制读取 + utf-8-sig：兼容 BOM，且不受系统 GBK 编码影响
-            raw = stream.read().decode("utf-8-sig", errors="replace").strip()
-            if raw:
-                data = json.loads(raw)
+        if stream is None:
+            return {}
+        raw = stream.read().decode("utf-8-sig", errors="replace").strip()
+        return json.loads(raw) if raw else {}
     except (ValueError, OSError):
-        data = {}
+        return {}
 
-    state = EVENT_STATE.get(event, "idle")
+
+def _tool_detail(data):
+    tool = data.get("tool_name", "")
+    tool_input = data.get("tool_input") or {}
+    if isinstance(tool_input, dict):
+        desc = tool_input.get("description") or tool_input.get("command")
+        if desc:
+            return tool, str(desc)[:48]
+    return tool, tool
+
+
+def _is_codex_asking_tool(tool_name):
+    low = (tool_name or "").lower()
+    return any(mark.lower() in low for mark in CODEX_ASKING_TOOLS)
+
+
+def _handle_codex(event, data):
+    event = data.get("hook_event_name") or event
+    state = CODEX_EVENT_STATE.get(event, "idle")
+    detail = ""
+    if event == "PreToolUse":
+        tool, detail = _tool_detail(data)
+        if _is_codex_asking_tool(tool):
+            state, detail = "asking", "等你输入"
+    elif event == "PermissionRequest":
+        _tool, detail = _tool_detail(data)
+    elif event == "PostToolUse":
+        detail = data.get("tool_name", "")
+    elif event in ("PreCompact", "PostCompact"):
+        detail = data.get("trigger", "")
+    elif event in ("SubagentStart", "SubagentStop"):
+        detail = data.get("agent_type", "")
+    elif event == "SessionStart":
+        detail = data.get("source", "")
+    return event, state, detail
+
+
+def _handle_claude(event, data):
+    state = CLAUDE_EVENT_STATE.get(event, "idle")
     detail = ""
     if event == "PreToolUse":
         detail = data.get("tool_name", "")
-        if detail in ASKING_TOOLS:
+        if detail in CLAUDE_ASKING_TOOLS:
             state, detail = "asking", "选择选项"
     elif event == "PermissionRequest":
         detail = data.get("tool_name", "")
     elif event == "Notification":
-        # 只有权限/确认类通知才进入 asking；空闲等待类通知不打扰
         msg = data.get("message", "")
         low = msg.lower()
         if "permission" in low or "approval" in low or "confirm" in low:
-            # "Claude needs your permission to use Bash" → 提取工具名
             detail = msg.rsplit(" use ", 1)[-1] if " use " in msg else msg
         elif "waiting for" in low or "idle" in low:
             state = "idle"
         else:
             detail = msg
+    return event, state, detail
+
+
+def run_hook(agent, event, stdin=None):
+    """读取事件 JSON 并写状态文件。stdin 为 None 时用 sys.stdin。"""
+    data = _read_stdin(stdin)
+    agent = (agent or "codex").lower()
+    if agent == "claude":
+        event, state, detail = _handle_claude(event, data)
+    else:
+        event, state, detail = _handle_codex(event, data)
 
     try:
-        hwnd = find_terminal_hwnd()
+        hwnd = find_agent_hwnd()
     except OSError:
         hwnd = 0
-    out = {"state": state, "detail": detail, "event": event,
+    out = {"state": state, "detail": detail, "event": event, "agent": agent,
            "hwnd": hwnd, "ts": time.time()}
     os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
     tmp = STATUS_PATH + ".tmp"
@@ -223,4 +295,5 @@ def run_hook(event, stdin=None):
 
 
 if __name__ == "__main__":
-    run_hook(sys.argv[1] if len(sys.argv) > 1 else "unknown")
+    run_hook(sys.argv[1] if len(sys.argv) > 1 else "codex",
+             sys.argv[2] if len(sys.argv) > 2 else "unknown")

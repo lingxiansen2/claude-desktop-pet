@@ -19,6 +19,7 @@ dist/
 # 桌宠状态文件写在 ~/.claude/pet/status.json，不在仓库内，无需忽略
 
 # ---- IDE / OS ----
+.codegraph/
 .vscode/
 .idea/
 *.swp
