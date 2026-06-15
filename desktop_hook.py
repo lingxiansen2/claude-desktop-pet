@@ -46,7 +46,33 @@ CLAUDE_EVENT_STATE = {
 CODEX_ASKING_TOOLS = {"request_user_input", "functions.request_user_input"}
 CLAUDE_ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 
-STATUS_PATH = os.path.join(os.path.expanduser("~"), ".desktop-pet", "status.json")
+# 操作文件类工具：动作对象取文件名
+CLAUDE_FILE_TOOLS = {"Edit", "Write", "Read", "MultiEdit", "NotebookEdit"}
+HISTORY_MAX = 3                 # 动作历史保留条数（含当前动作 = history[0]）
+
+SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".desktop-pet", "sessions")
+
+
+def _safe_key(s):
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(s))[:64]
+
+
+def _session_key(agent, data, hwnd):
+    """每个对话一个 key：Claude 用 session_id；缺失则用 agent+终端窗口兜底。"""
+    sid = (data.get("session_id") or data.get("sessionId")
+           or data.get("conversation_id"))
+    if sid:
+        return _safe_key(sid)
+    return "{}-{}".format(agent, hwnd or 0)
+
+
+def _session_path(key):
+    return os.path.join(SESSIONS_DIR, key + ".json")
+
+
+def _cwd(data):
+    return (data.get("cwd") or data.get("workdir")
+            or data.get("working_directory") or "")
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -188,7 +214,7 @@ def find_agent_hwnd():
     if not got_console:
         return 0
     # ConPTY 且宿主不在父链上（Win11 默认终端接管）：
-    # 在所有可见窗口里找终端宿主进程的窗口，优先标题匹配
+    # 在所有可见终端窗口里按控制台标题匹配；唯一候选则直接采用
     cands = [(h, p) for h, p in _visible_windows()
              if names.get(p) in TERMINAL_HOSTS]
     if console_title:
@@ -198,9 +224,6 @@ def find_agent_hwnd():
                 return h
     if len(cands) == 1:
         return cands[0][0]
-    for h, _p in _visible_windows():
-        if "codex" in _window_title(h).lower():
-            return h
     return 0
 
 
@@ -223,6 +246,67 @@ def _tool_detail(data):
         if desc:
             return tool, str(desc)[:48]
     return tool, tool
+
+
+def _short(s, n):
+    """单行化并截断，超长加省略号。"""
+    s = str(s).replace("\n", " ").strip()
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _claude_action(data):
+    """把一次工具调用浓缩成『动词 + 对象』短标签，如『Edit desktop_pet.py』。"""
+    tool = data.get("tool_name", "") or ""
+    ti = data.get("tool_input") or {}
+    target = ""
+    if isinstance(ti, dict):
+        if tool in CLAUDE_FILE_TOOLS:
+            target = os.path.basename(ti.get("file_path")
+                                      or ti.get("notebook_path") or "")
+        elif tool == "Bash":
+            target = ti.get("description") or ti.get("command") or ""
+        elif tool in ("Glob", "Grep"):
+            target = ti.get("pattern") or ""
+        elif tool == "Task":
+            target = ti.get("description") or ti.get("subagent_type") or ""
+        elif tool in ("WebFetch", "WebSearch"):
+            target = ti.get("url") or ti.get("query") or ""
+    label = (tool + " " + target).strip() if target else tool
+    return _short(label, 24)
+
+
+def _todo_progress(tool_input):
+    """从 TodoWrite 的 todos 列表算出 {done,total,active}；无清单返回 None。"""
+    todos = tool_input.get("todos") if isinstance(tool_input, dict) else None
+    if not isinstance(todos, list) or not todos:
+        return None
+    total = len(todos)
+    done = sum(1 for t in todos
+               if isinstance(t, dict) and t.get("status") == "completed")
+    active = ""
+    for t in todos:
+        if isinstance(t, dict) and t.get("status") == "in_progress":
+            active = t.get("activeForm") or t.get("content") or ""
+            break
+    return {"done": done, "total": total, "active": _short(active, 18)}
+
+
+def _push_history(history, label):
+    """把当前动作压到队首；与队首相同则去重；裁到 HISTORY_MAX。"""
+    if not label:
+        return history
+    if history and history[0] == label:
+        return history
+    return ([label] + list(history))[:HISTORY_MAX]
+
+
+def _load_status(path):
+    """读取已有会话状态文件（用于跨进程累积历史/TODO），出错返回空 dict。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def _is_codex_asking_tool(tool_name):
@@ -251,13 +335,29 @@ def _handle_codex(event, data):
     return event, state, detail
 
 
-def _handle_claude(event, data):
+def _handle_claude(event, data, todo, history):
+    """返回 (event, state, detail, todo, history)。
+
+    detail 为当前动作短标签；todo 为 TodoWrite 进度；history 为最近动作队列
+    （队首为当前动作）。todo/history 跨多次 hook 进程经状态文件累积。
+    """
     state = CLAUDE_EVENT_STATE.get(event, "idle")
     detail = ""
+    if event in ("SessionStart", "UserPromptSubmit"):
+        history, todo = [], None           # 新一轮提问 → 清空动作历史与旧 TODO
     if event == "PreToolUse":
-        detail = data.get("tool_name", "")
-        if detail in CLAUDE_ASKING_TOOLS:
+        tool = data.get("tool_name", "")
+        if tool == "TodoWrite":
+            # TodoWrite 只更新任务进度，不抢占当前动作、不进历史
+            todo = _todo_progress(data.get("tool_input") or {})
+            state = "working"
+            detail = history[0] if history else ""
+        elif tool in CLAUDE_ASKING_TOOLS:
             state, detail = "asking", "选择选项"
+            history = _push_history(history, _claude_action(data))
+        else:
+            detail = _claude_action(data)
+            history = _push_history(history, detail)
     elif event == "PermissionRequest":
         detail = data.get("tool_name", "")
     elif event == "Notification":
@@ -269,29 +369,86 @@ def _handle_claude(event, data):
             state = "idle"
         else:
             detail = msg
-    return event, state, detail
+    return event, state, detail, todo, history
+
+
+def _foreground_app_window():
+    """当前前台窗口；排除桌面/任务栏与自身桌宠窗口。"""
+    u32 = ctypes.windll.user32
+    fg = u32.GetForegroundWindow()
+    if not fg or not u32.IsWindowVisible(fg):
+        return 0
+    cls = window_class(fg)
+    if cls in ("Progman", "WorkerW", "Shell_TrayWnd") or cls.startswith("Tk"):
+        return 0
+    return fg
+
+
+def _resolve_hwnd(event, data, prev):
+    """会话终端句柄：用户提交/启动会话那一刻前台窗口即其终端，抓下并整个会话复用。
+
+    ConPTY 下 GetConsoleWindow 恒为 0，且承载终端（Windows Terminal）不在 hook 的
+    父进程链上，靠控制台爬链无法定位；而提交提问/启动会话时前台窗口必然是该终端，
+    因此只在这两类事件抓前台，其余事件沿用已存的句柄。
+    """
+    if event in ("UserPromptSubmit", "SessionStart"):
+        fg = _foreground_app_window()
+        if fg:
+            return fg
+    hwnd = prev.get("hwnd") or 0
+    if hwnd:
+        return hwnd
+    try:
+        return find_agent_hwnd()           # 兜底（如 codex GUI 应用）
+    except OSError:
+        return 0
 
 
 def run_hook(agent, event, stdin=None):
     """读取事件 JSON 并写状态文件。stdin 为 None 时用 sys.stdin。"""
     data = _read_stdin(stdin)
     agent = (agent or "codex").lower()
+
+    # 会话 key：Claude 用 session_id；缺失才动用 find_agent_hwnd 兜底
+    sid = (data.get("session_id") or data.get("sessionId")
+           or data.get("conversation_id"))
+    if sid:
+        key_hwnd = 0
+    else:
+        try:
+            key_hwnd = find_agent_hwnd()
+        except OSError:
+            key_hwnd = 0
+    key = _session_key(agent, data, key_hwnd)
+    path = _session_path(key)
+
+    # 会话结束 → 删除该会话文件，桌宠随之消失
+    if event == "SessionEnd":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+
+    prev = _load_status(path)
+    hwnd = _resolve_hwnd(event, data, prev)
+    todo, history = None, []
     if agent == "claude":
-        event, state, detail = _handle_claude(event, data)
+        if prev:                           # 方案 A：读改写，跨进程累积历史/TODO
+            todo, history = prev.get("todo"), prev.get("history") or []
+        event, state, detail, todo, history = _handle_claude(
+            event, data, todo, history)
     else:
         event, state, detail = _handle_codex(event, data)
 
-    try:
-        hwnd = find_agent_hwnd()
-    except OSError:
-        hwnd = 0
     out = {"state": state, "detail": detail, "event": event, "agent": agent,
-           "hwnd": hwnd, "ts": time.time()}
-    os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
-    tmp = STATUS_PATH + ".tmp"
+           "hwnd": hwnd, "ts": time.time(), "todo": todo, "history": history,
+           "session_id": data.get("session_id") or "", "cwd": _cwd(data)}
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
-    os.replace(tmp, STATUS_PATH)
+    os.replace(tmp, path)
 
 
 if __name__ == "__main__":

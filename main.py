@@ -28,8 +28,8 @@ def report(text):
 def main():
     args = sys.argv[1:]
     if not args:
-        from desktop_pet import DesktopPet
-        DesktopPet().run()
+        from desktop_pet import PetManager
+        PetManager().run()
     elif args[0] == "hook":
         from desktop_hook import run_hook
         agent = args[1] if len(args) > 1 else "codex"

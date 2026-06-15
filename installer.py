@@ -13,6 +13,7 @@ STARTUP_LNK = os.path.join(
     "Start Menu", "Programs", "Startup", "desktop-pet.lnk")
 
 CLAUDE_HOOK_EVENTS = [
+    ("SessionStart", False),
     ("UserPromptSubmit", False),
     ("PreToolUse", True),
     ("PostToolUse", True),
