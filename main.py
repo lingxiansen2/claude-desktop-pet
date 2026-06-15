@@ -3,8 +3,8 @@
 
 desktop-pet.exe                         启动桌宠
 desktop-pet.exe hook <agent> <Event>    hook 模式（stdin 传事件 JSON）
-desktop-pet.exe install [all|claude|codex]
-desktop-pet.exe uninstall [all|claude|codex]
+desktop-pet.exe install [claude|all|codex]    默认 claude
+desktop-pet.exe uninstall [claude|all|codex]  默认 claude
 """
 import ctypes
 import sys
@@ -37,10 +37,10 @@ def main():
         run_hook(agent, event)
     elif args[0] == "install":
         import installer
-        report(installer.install(args[1] if len(args) > 1 else "all"))
+        report(installer.install(args[1] if len(args) > 1 else "claude"))
     elif args[0] == "uninstall":
         import installer
-        report(installer.uninstall(args[1] if len(args) > 1 else "all"))
+        report(installer.uninstall(args[1] if len(args) > 1 else "claude"))
     else:
         report(__doc__)
 

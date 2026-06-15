@@ -151,13 +151,13 @@ def _create_startup(make_startup):
 
 
 def _normalize_target(target):
-    target = (target or "all").lower()
+    target = (target or "claude").lower()
     if target not in ("all", "claude", "codex"):
         raise ValueError("target must be one of: all, claude, codex")
     return target
 
 
-def install(target="all", make_startup=True):
+def install(target="claude", make_startup=True):
     target = _normalize_target(target)
     paths = []
     if target in ("all", "claude"):
@@ -166,7 +166,7 @@ def install(target="all", make_startup=True):
         paths.append(_install_codex())
     startup = _create_startup(make_startup)
     return ("已安装 desktop-pet hooks：{}\n开机自启：{}\n"
-            "新开的 Claude Code / Codex 会话即可驱动同一只桌宠。"
+            "新开的会话即可驱动对应的桌宠（每个对话一只）。"
             ).format(", ".join(paths), startup)
 
 
@@ -176,7 +176,7 @@ def _uninstall_path(path):
     _save_json(path, cfg)
 
 
-def uninstall(target="all"):
+def uninstall(target="claude"):
     target = _normalize_target(target)
     paths = []
     if target in ("all", "claude"):
