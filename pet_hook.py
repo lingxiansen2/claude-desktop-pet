@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Claude Code hook → 桌宠状态文件。
+"""Claude Code hook → 桌宠状态文件（每会话一份）。
 
 用法（settings.json hooks 中配置）: py -3 pet_hook.py <EventName>
 或打包后: claude-pet.exe hook <EventName>
-事件 JSON 从 stdin 传入，提取关键信息后原子写入
-~/.claude/pet/status.json，供桌宠轮询。
+事件 JSON 从 stdin 传入（含 session_id / cwd），提取关键信息后原子写入
+~/.claude/pet/sessions/<session_id>.json，供桌宠按会话各显示一只螃蟹。
+SessionEnd 删除对应文件，桌宠随即移除该会话的螃蟹。
 """
 import ctypes
 import ctypes.wintypes
 import json
 import os
+import re
 import sys
 import time
 
@@ -28,7 +30,36 @@ EVENT_STATE = {
 # 这些工具本质是在等用户做选择，应显示为 asking 而不是 working
 ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 
-STATUS_PATH = os.path.join(os.path.expanduser("~"), ".claude", "pet", "status.json")
+PET_DIR = os.path.join(os.path.expanduser("~"), ".claude", "pet")
+SESSIONS_DIR = os.path.join(PET_DIR, "sessions")
+DEAD_AFTER = 6 * 3600           # 会话文件超过 6 小时未更新 → 清理（与桌宠一致）
+
+
+def _safe_id(session_id):
+    """把 session_id 规整为安全文件名（仅保留字母数字与 _-）。"""
+    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(session_id))
+    return sid or "default"
+
+
+def _session_file(session_id):
+    return os.path.join(SESSIONS_DIR, _safe_id(session_id) + ".json")
+
+
+def _prune_stale():
+    """删除长期未更新的残留会话文件（终端崩溃未触发 SessionEnd 时兜底）。"""
+    try:
+        now = time.time()
+        for name in os.listdir(SESSIONS_DIR):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(SESSIONS_DIR, name)
+            try:
+                if now - os.path.getmtime(path) > DEAD_AFTER:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -177,7 +208,7 @@ def find_terminal_hwnd():
 
 
 def run_hook(event, stdin=None):
-    """读取事件 JSON 并写状态文件。stdin 为 None 时用 sys.stdin。"""
+    """读取事件 JSON 并写该会话的状态文件。stdin 为 None 时用 sys.stdin。"""
     data = {}
     try:
         stream = stdin if stdin is not None else getattr(sys.stdin, "buffer", None)
@@ -188,6 +219,18 @@ def run_hook(event, stdin=None):
                 data = json.loads(raw)
     except (ValueError, OSError):
         data = {}
+
+    session_id = data.get("session_id") or "default"
+    sess_file = _session_file(session_id)
+
+    # 会话结束：删掉该会话文件，桌宠下次轮询即移除这只螃蟹
+    if event == "SessionEnd":
+        try:
+            os.remove(sess_file)
+        except OSError:
+            pass
+        _prune_stale()
+        return
 
     state = EVENT_STATE.get(event, "idle")
     detail = ""
@@ -213,13 +256,21 @@ def run_hook(event, stdin=None):
         hwnd = find_terminal_hwnd()
     except OSError:
         hwnd = 0
+
+    cwd = data.get("cwd") or ""
+    project = os.path.basename(cwd.rstrip("/\\")) if cwd else ""
+
     out = {"state": state, "detail": detail, "event": event,
-           "hwnd": hwnd, "ts": time.time()}
-    os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
-    tmp = STATUS_PATH + ".tmp"
+           "hwnd": hwnd, "project": project, "session_id": str(session_id),
+           "ts": time.time()}
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    tmp = sess_file + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
-    os.replace(tmp, STATUS_PATH)
+    os.replace(tmp, sess_file)
+
+    if event == "SessionStart":
+        _prune_stale()
 
 
 if __name__ == "__main__":

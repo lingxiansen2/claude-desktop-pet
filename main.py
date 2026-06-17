@@ -28,8 +28,8 @@ def report(text):
 def main():
     args = sys.argv[1:]
     if not args:
-        from clawd_pet import ClawdPet
-        ClawdPet().run()
+        from clawd_pet import PetManager
+        PetManager().run()
     elif args[0] == "hook":
         from pet_hook import run_hook
         run_hook(args[1] if len(args) > 1 else "unknown")

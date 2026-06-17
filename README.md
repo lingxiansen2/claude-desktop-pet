@@ -5,11 +5,22 @@
 ![deps](https://img.shields.io/badge/dependencies-none-success)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-一只住在桌面上的像素小螃蟹 Clawd（Claude Code 官方吉祥物形象），**沿屏幕四边绕圈
-爬行**，通过 Claude Code hooks 实时显示 Claude 的工作状态。零第三方依赖（纯
-`tkinter + ctypes`），打包为免 Python 环境的安装式 exe。
+一群住在桌面上的像素小螃蟹 Clawd（Claude Code 官方吉祥物形象），**每个 Claude Code
+会话一只**，**沿屏幕四边绕圈爬行**，通过 Claude Code hooks 实时显示各会话的工作状态。
+零第三方依赖（纯 `tkinter + ctypes`），打包为免 Python 环境的安装式 exe。
 
 > Windows 专用。鼠标停在小克身上它会停下让你摸一摸，移开继续爬。
+
+## 多会话
+
+每个 Claude Code 会话各自驱动**一只独立的螃蟹**：会话一开始（SessionStart）就生成
+对应的小克，会话结束（SessionEnd）或其终端窗口关闭时自动消失。多个终端/项目并行
+时，你能同时看到每只螃蟹各自的状态，气泡带上项目名（如 `[proj-2] ⁉ 等你确认`），
+**双击某只螃蟹直接跳回它所属的那个终端**。没有任何会话时，保留一只待机螃蟹陪着。
+
+实现：每个会话的 hook 按 `session_id` 写入独立的
+`~/.claude/pet/sessions/<session_id>.json`（不再是单一的 status.json，避免多会话
+互相覆盖）；GUI 的 `PetManager` 每 0.5s 轮询该目录，按会话生死增删 `Crab` 窗口。
 
 ## 状态行为
 
@@ -71,16 +82,20 @@ py -3 main.py install       # 同 exe 的 install
 ## 架构
 
 ```
-Claude Code ──hooks(exec)──▶ claude-pet.exe hook <Event> ──写──▶ ~/.claude/pet/status.json
-                                                                      ▲
-桌面上的 claude-pet.exe（tkinter GUI）──每 0.5s 轮询──────────────────┘
+会话A ─hooks─▶ claude-pet.exe hook <Event> ─写─▶ ~/.claude/pet/sessions/<A>.json ─┐
+会话B ─hooks─▶ claude-pet.exe hook <Event> ─写─▶ ~/.claude/pet/sessions/<B>.json ─┤
+                                                                                  ▼
+            桌面上的 claude-pet.exe（PetManager）──每 0.5s 轮询 sessions/ 目录──────┘
+                          按会话生死增删螃蟹（每会话一只 Crab 窗口）
 ```
 
 源码（开发模式可直接 `py -3 clawd_pet.py` 运行）：
 
 - `main.py` — exe 统一入口（GUI / hook / install / uninstall 分发）
-- `clawd_pet.py` — 桌宠 GUI：像素渲染、四边绕屏爬行/旋转贴壁/跳跃动画、气泡、状态机
-- `pet_hook.py` — hook 事件 → 状态映射（含 Notification 分类、AskUserQuestion 特判）
+- `clawd_pet.py` — 桌宠 GUI：`PetManager` 轮询会话目录增删螃蟹，`Crab` 负责单只的
+  像素渲染、四边绕屏爬行/旋转贴壁/跳跃动画、气泡、状态机与双击跳转
+- `pet_hook.py` — hook 事件 → 按会话写状态文件（含 Notification 分类、
+  AskUserQuestion 特判、SessionEnd 删除、过期会话清理）
 - `installer.py` — settings.json 合并/清理 + 开机自启快捷方式
 
 重新打包：`py -3 -m PyInstaller --noconfirm --onedir --windowed --name claude-pet main.py`

@@ -17,6 +17,7 @@ STARTUP_LNK = os.path.join(
 
 # (事件, 是否带 matcher)
 HOOK_EVENTS = [
+    ("SessionStart", False),
     ("UserPromptSubmit", False),
     ("PreToolUse", True),
     ("PostToolUse", True),
