@@ -101,10 +101,22 @@ def _rot(grid, k):
 
 
 def get_work_area():
-    """主显示器工作区（不含任务栏）。"""
-    rect = ctypes.wintypes.RECT()
-    ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
-    return rect.left, rect.top, rect.right, rect.bottom
+    """主显示器工作区（不含任务栏）。失败时回退到全屏尺寸，再不行用 1920x1080。"""
+    try:
+        rect = ctypes.wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+            if rect.right > rect.left and rect.bottom > rect.top:
+                return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+    try:
+        u = ctypes.windll.user32
+        w, h = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+        if w > 0 and h > 0:
+            return 0, 0, w, h
+    except Exception:
+        pass
+    return 0, 0, 1920, 1080
 
 
 def _is_window(hwnd):
@@ -916,14 +928,31 @@ class PetManager:
         self.cy_bottom = self.wa_b - h_h // 2
 
         self.crabs = {}                    # session_id(None=待机) -> 桌宠实例
-        self._pet_class = CatPet if PET_KIND == "cat" else Crab
         self.frame = 0
 
-        # 前台锁定超时设为 0：允许本进程把别的窗口拉到前台
-        ctypes.windll.user32.SystemParametersInfoW(0x2001, 0, ctypes.c_void_p(0), 3)
+        # 选形象：月薪喵需要素材，加载失败(缺图/损坏)则自动退回纯绘制的螃蟹(零依赖)
+        self._pet_class = Crab
+        if PET_KIND == "cat":
+            try:
+                CatPet._load_images()
+                self._pet_class = CatPet
+            except Exception:
+                self._pet_class = Crab
 
-        os.makedirs(SESSIONS_DIR, exist_ok=True)
-        self._sync_sessions()              # 启动即生成螃蟹（无会话则一只待机）
+        # 前台锁定超时设为 0：允许本进程把别的窗口拉到前台
+        try:
+            ctypes.windll.user32.SystemParametersInfoW(0x2001, 0, ctypes.c_void_p(0), 3)
+        except Exception:
+            pass
+
+        try:
+            os.makedirs(SESSIONS_DIR, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            self._sync_sessions()          # 启动即生成桌宠（无会话则一只待机）
+        except Exception:
+            pass
         self.root.after(TICK_MS, self._tick)
 
     def quit(self):
@@ -979,21 +1008,48 @@ class PetManager:
                 self.crabs.pop(None).destroy()
             for sid in present:
                 if sid not in self.crabs:
-                    self.crabs[sid] = self._pet_class(self, sid)
+                    try:
+                        self.crabs[sid] = self._pet_class(self, sid)
+                    except Exception:
+                        pass
         elif not self.crabs:
             # 没有任何会话 → 留一只待机桌宠陪着
-            self.crabs[None] = self._pet_class(self, None)
+            try:
+                self.crabs[None] = self._pet_class(self, None)
+            except Exception:
+                pass
 
-        for crab in self.crabs.values():
-            crab.poll()
+        for crab in list(self.crabs.values()):
+            try:
+                crab.poll()
+            except Exception:
+                pass
 
     def _tick(self):
-        self.frame += 1
-        if self.frame % POLL_TICKS == 0:
-            self._sync_sessions()
-        for crab in list(self.crabs.values()):
-            crab.tick()
-        self.root.after(TICK_MS, self._tick)
+        try:
+            self.frame += 1
+            if self.frame % POLL_TICKS == 0:
+                try:
+                    self._sync_sessions()
+                except Exception:
+                    pass
+            for sid, crab in list(self.crabs.items()):
+                try:
+                    crab.tick()
+                except Exception:
+                    # 单只出错就移除它，绝不拖垮其它宠物或整个循环
+                    try:
+                        crab.destroy()
+                    except Exception:
+                        pass
+                    self.crabs.pop(sid, None)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.root.after(TICK_MS, self._tick)
+            except Exception:
+                pass
 
     def run(self):
         self.root.mainloop()

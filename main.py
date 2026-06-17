@@ -25,20 +25,49 @@ def report(text):
     msgbox(text)
 
 
+def _crashlog(where):
+    """把异常写到 ~/.claude/pet/crash.log，便于排查（绝不再抛出）。"""
+    import os
+    import time
+    import traceback
+    try:
+        p = os.path.join(os.path.expanduser("~"), ".claude", "pet", "crash.log")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("\n--- %s @ %s ---\n%s\n" % (where, time.ctime(), traceback.format_exc()))
+    except Exception:
+        pass
+
+
 def main():
     args = sys.argv[1:]
     if not args:
-        from clawd_pet import PetManager
-        PetManager().run()
+        try:
+            from clawd_pet import PetManager
+            PetManager().run()
+        except Exception:
+            _crashlog("gui")            # GUI 启动/运行异常 → 记日志，静默退出
     elif args[0] == "hook":
-        from pet_hook import run_hook
-        run_hook(args[1] if len(args) > 1 else "unknown")
+        # hook 由 Claude Code 拉起，无论如何不能因异常影响 Claude
+        try:
+            from pet_hook import run_hook
+            run_hook(args[1] if len(args) > 1 else "unknown")
+        except Exception:
+            _crashlog("hook")
     elif args[0] == "install":
-        import installer
-        report(installer.install())
+        try:
+            import installer
+            report(installer.install())
+        except Exception:
+            _crashlog("install")
+            report("安装出错，详情见 ~/.claude/pet/crash.log")
     elif args[0] == "uninstall":
-        import installer
-        report(installer.uninstall())
+        try:
+            import installer
+            report(installer.uninstall())
+        except Exception:
+            _crashlog("uninstall")
+            report("卸载出错，详情见 ~/.claude/pet/crash.log")
     else:
         report(__doc__)
 
