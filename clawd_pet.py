@@ -241,12 +241,24 @@ class Crab:
         y = self.win.winfo_pointery() - self._dy
         self.cx = x + CANVAS_W // 2
         self.cy = y + CANVAS_H // 2
+        self.win_x, self.win_y = x, y      # 同步窗口原点，否则 _draw 用旧原点会把形象画出画布(拖到上方时消失)
         self.win.geometry(f"+{x}+{y}")
 
     def _drag_end(self, _e):
         self.dragging = False
-        self.falling = True                # 松手沿重力落回底边
+        self.edge = self._nearest_edge()   # 靠近哪条边就吸附到哪条边
+        self.falling = True                # 沿该边法向滑过去贴边
         self.fall_v = 0.0
+
+    def _nearest_edge(self):
+        """松手时按中心点到四条边轨道的距离，取最近的边作为吸附目标。"""
+        d = {
+            "bottom": abs(self.cy_bottom - self.cy),
+            "top":    abs(self.cy - self.cy_top),
+            "left":   abs(self.cx - self.cx_left),
+            "right":  abs(self.cx_right - self.cx),
+        }
+        return min(d, key=d.get)
 
     def _focus_claude(self, _e=None):
         """双击：把本会话的 Claude 终端窗口还原并置前。"""
@@ -388,15 +400,28 @@ class Crab:
         self.win.geometry(f"+{x}+{y}")
 
     def _fall(self):
-        """拖拽释放后沿重力落回底边（脚朝下）。"""
+        """拖拽释放后朝最近的边(self.edge)加速滑过去贴边。"""
         self.fall_v += FALL_G
-        self.cy = min(self.cy + self.fall_v, self.cy_bottom)
-        self.cx = min(max(self.cx, self.x_lo), self.x_hi)
-        if self.cy >= self.cy_bottom:
-            self.cy = self.cy_bottom
+        e = self.edge
+        if e == "bottom":
+            self.cy = min(self.cy + self.fall_v, self.cy_bottom)
+            self.cx = min(max(self.cx, self.x_lo), self.x_hi)
+            done = self.cy >= self.cy_bottom
+        elif e == "top":
+            self.cy = max(self.cy - self.fall_v, self.cy_top)
+            self.cx = min(max(self.cx, self.x_lo), self.x_hi)
+            done = self.cy <= self.cy_top
+        elif e == "left":
+            self.cx = max(self.cx - self.fall_v, self.cx_left)
+            self.cy = min(max(self.cy, self.y_lo), self.y_hi)
+            done = self.cx <= self.cx_left
+        else:  # right
+            self.cx = min(self.cx + self.fall_v, self.cx_right)
+            self.cy = min(max(self.cy, self.y_lo), self.y_hi)
+            done = self.cx >= self.cx_right
+        if done:
             self.fall_v = 0.0
             self.falling = False
-            self.edge = "bottom"
         self._apply()
 
     def _hop(self):
@@ -662,12 +687,24 @@ class CatPet:
         y = self.win.winfo_pointery() - self._dy
         self.cx = x + CAT_CW // 2
         self.cy = y + CAT_CH // 2
+        self.win_x, self.win_y = x, y      # 同步窗口原点，否则 _draw 用旧原点会把形象画出画布(拖到上方时消失)
         self.win.geometry(f"+{x}+{y}")
 
     def _drag_end(self, _e):
         self.dragging = False
-        self.falling = True                # 松手沿重力落回底边
+        self.edge = self._nearest_edge()   # 靠近哪条边就吸附到哪条边
+        self.falling = True                # 沿该边法向滑过去贴边
         self.fall_v = 0.0
+
+    def _nearest_edge(self):
+        """松手时按中心点到四条边轨道的距离，取最近的边作为吸附目标。"""
+        d = {
+            "bottom": abs(self.cy_bottom - self.cy),
+            "top":    abs(self.cy - self.cy_top),
+            "left":   abs(self.cx - self.cx_left),
+            "right":  abs(self.cx_right - self.cx),
+        }
+        return min(d, key=d.get)
 
     def _focus_claude(self, _e=None):
         hwnd = self.claude_hwnd
@@ -795,14 +832,28 @@ class CatPet:
         self.win.geometry(f"+{x}+{y}")
 
     def _fall(self):
+        """拖拽释放后朝最近的边(self.edge)加速滑过去贴边。"""
         self.fall_v += FALL_G
-        self.cy = min(self.cy + self.fall_v, self.cy_bottom)
-        self.cx = min(max(self.cx, self.x_lo), self.x_hi)
-        if self.cy >= self.cy_bottom:
-            self.cy = self.cy_bottom
+        e = self.edge
+        if e == "bottom":
+            self.cy = min(self.cy + self.fall_v, self.cy_bottom)
+            self.cx = min(max(self.cx, self.x_lo), self.x_hi)
+            done = self.cy >= self.cy_bottom
+        elif e == "top":
+            self.cy = max(self.cy - self.fall_v, self.cy_top)
+            self.cx = min(max(self.cx, self.x_lo), self.x_hi)
+            done = self.cy <= self.cy_top
+        elif e == "left":
+            self.cx = max(self.cx - self.fall_v, self.cx_left)
+            self.cy = min(max(self.cy, self.y_lo), self.y_hi)
+            done = self.cx <= self.cx_left
+        else:  # right
+            self.cx = min(self.cx + self.fall_v, self.cx_right)
+            self.cy = min(max(self.cy, self.y_lo), self.y_hi)
+            done = self.cx >= self.cx_right
+        if done:
             self.fall_v = 0.0
             self.falling = False
-            self.edge = "bottom"
         self._apply()
 
     def _hop(self):
